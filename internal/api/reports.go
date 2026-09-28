@@ -55,6 +55,35 @@ type reportsResponse struct {
 	Meta   any  `json:"meta,omitempty"`
 }
 
+// NewAttendanceByHubHandler builds GET /api/reports/attendance/by-hub —
+// attendance broken down by every hub with active students, in one call.
+func NewAttendanceByHubHandler(dbConn *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		summaries, err := reports.AttendanceByHub(r.Context(), dbConn, time.Now())
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, reportsResponse{Status: false})
+			return
+		}
+		if summaries == nil {
+			summaries = []reports.HubSummary{}
+		}
+		writeJSON(w, http.StatusOK, reportsResponse{Status: true, Data: summaries})
+	}
+}
+
+// NewScanReliabilityHandler builds GET /api/reports/scans/reliability —
+// org-wide OCR/matching accuracy stats.
+func NewScanReliabilityHandler(dbConn *sql.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		rel, err := reports.ScanReliability(r.Context(), dbConn)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, reportsResponse{Status: false})
+			return
+		}
+		writeJSON(w, http.StatusOK, reportsResponse{Status: true, Data: rel})
+	}
+}
+
 // NewHubAttendanceStatsHandler builds GET /api/reports/hubs/{hubId}/attendance/stats.
 func NewHubAttendanceStatsHandler(dbConn *sql.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {

@@ -50,7 +50,11 @@ func main() {
 				api.RequireServiceKey(api.NewHubAttendanceStatsHandler(conn)))
 			mux.HandleFunc("GET /api/reports/hubs/{hubId}/attendance",
 				api.RequireServiceKey(api.NewHubAttendanceListHandler(conn)))
-			log.Printf("REPORTS_API_KEY set — /api/reports/hubs/{hubId}/attendance enabled")
+			mux.HandleFunc("GET /api/reports/attendance/by-hub",
+				api.RequireServiceKey(api.NewAttendanceByHubHandler(conn)))
+			mux.HandleFunc("GET /api/reports/scans/reliability",
+				api.RequireServiceKey(api.NewScanReliabilityHandler(conn)))
+			log.Printf("REPORTS_API_KEY set — reporting endpoints enabled (per-hub stats/list, attendance/by-hub, scans/reliability)")
 		} else {
 			log.Printf("REPORTS_API_KEY not set — reporting endpoints disabled")
 		}
