@@ -43,6 +43,17 @@ func main() {
 		mux.HandleFunc("/api/auth/hub-login", api.NewHubLoginHandler(conn))
 		mux.HandleFunc("/api/attendance/scan", api.RequireHubSession(conn, api.NewAttendanceScanHandler(conn)))
 		log.Printf("database connected — /api/auth/hub-tags, /api/auth/hub-login and /api/attendance/scan enabled")
+
+		if reportsKey := os.Getenv("REPORTS_API_KEY"); reportsKey != "" {
+			api.SetReportsAPIKey(reportsKey)
+			mux.HandleFunc("GET /api/reports/hubs/{hubId}/attendance/stats",
+				api.RequireServiceKey(api.NewHubAttendanceStatsHandler(conn)))
+			mux.HandleFunc("GET /api/reports/hubs/{hubId}/attendance",
+				api.RequireServiceKey(api.NewHubAttendanceListHandler(conn)))
+			log.Printf("REPORTS_API_KEY set — /api/reports/hubs/{hubId}/attendance enabled")
+		} else {
+			log.Printf("REPORTS_API_KEY not set — reporting endpoints disabled")
+		}
 	} else {
 		unavailable := func(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "not configured (DATABASE_URL is not set)", http.StatusServiceUnavailable)
