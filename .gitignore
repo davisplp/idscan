@@ -1,0 +1,17 @@
+# Compiled binary — rebuilt locally on each machine, not shipped via git
+idscan-server
+
+# Environment / secrets — never commit real credentials
+.env
+.env.*
+
+# macOS
+.DS_Store
+
+# Editor/IDE
+.vscode/
+.idea/
+
+# Go test artifacts
+*.test
+*.out

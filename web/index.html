@@ -1,0 +1,805 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>idscan</title>
+<style>
+  :root {
+    --bg: #10141a;
+    --surface: #1b212b;
+    --surface-2: #232b37;
+    --line: #2b3441;
+    --ink: #f4f6f8;
+    --ink-dim: #8b96a3;
+    --accent: #22b0a2;
+    --accent-ink: #06211e;
+    --warn: #e3a23d;
+    --danger: #e2574c;
+    --success: #2fbd79;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    height: 100%;
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  /* A scanning tool is used one-handed, often in bright outdoor light —
+     a dark, low-glare chrome around a bright live feed reads clearly and
+     keeps focus on the card, the way a camera app's UI does. */
+
+  #app {
+    height: 100%;
+    max-width: 480px;
+    margin: 0 auto;
+    display: flex;
+    flex-direction: column;
+    position: relative;
+  }
+
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 18px;
+    flex-shrink: 0;
+  }
+
+  .wordmark {
+    font-size: 0.95rem;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+  }
+
+  .status {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.8rem;
+    color: var(--ink-dim);
+  }
+
+  .dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--ink-dim);
+  }
+
+  .dot.live { background: var(--success); }
+
+  /* ---------- Capture view ---------- */
+
+  #captureView {
+    position: relative;
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  .viewfinder {
+    position: relative;
+    flex: 1;
+    background: #000;
+    overflow: hidden;
+  }
+
+  #video {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+  }
+
+  .guide {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 86%;
+    aspect-ratio: 1.586 / 1; /* ID-1 card ratio (85.6mm x 53.98mm) */
+    transform: translate(-50%, -50%);
+    border-radius: 14px;
+    box-shadow: 0 0 0 3000px rgba(0, 0, 0, 0.45);
+    pointer-events: none;
+  }
+
+  .guide::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: 14px;
+    border: 2px solid rgba(244, 246, 248, 0.35);
+  }
+
+  .corner {
+    position: absolute;
+    width: 26px;
+    height: 26px;
+    border: 3px solid var(--accent);
+  }
+  .corner.tl { top: -3px; left: -3px; border-right: none; border-bottom: none; border-top-left-radius: 12px; }
+  .corner.tr { top: -3px; right: -3px; border-left: none; border-bottom: none; border-top-right-radius: 12px; }
+  .corner.bl { bottom: -3px; left: -3px; border-right: none; border-top: none; border-bottom-left-radius: 12px; }
+  .corner.br { bottom: -3px; right: -3px; border-left: none; border-top: none; border-bottom-right-radius: 12px; }
+
+  .hint {
+    position: absolute;
+    bottom: 14px;
+    left: 0;
+    right: 0;
+    text-align: center;
+    font-size: 0.85rem;
+    color: var(--ink);
+    text-shadow: 0 1px 3px rgba(0, 0, 0, 0.6);
+    padding: 0 24px;
+  }
+
+  .controls {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 22px 0 28px;
+    flex-shrink: 0;
+    gap: 28px;
+  }
+
+  .shutter {
+    width: 70px;
+    height: 70px;
+    border-radius: 50%;
+    background: var(--ink);
+    border: 4px solid var(--surface-2);
+    box-shadow: 0 0 0 2px var(--ink);
+    cursor: pointer;
+    transition: transform 0.1s ease;
+  }
+  .shutter:active { transform: scale(0.92); }
+
+  .fallback-link {
+    position: absolute;
+    bottom: 8px;
+    right: 14px;
+    font-size: 0.75rem;
+    color: var(--ink-dim);
+    text-decoration: none;
+  }
+
+  /* ---------- Shared panel views (assessing / result / error) ---------- */
+
+  .panel {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    padding: 0 20px 24px;
+    overflow-y: auto;
+  }
+
+  .thumb-wrap {
+    border-radius: 14px;
+    overflow: hidden;
+    border: 1px solid var(--line);
+    margin-bottom: 18px;
+    background: var(--surface);
+  }
+
+  .thumb-wrap img {
+    display: block;
+    width: 100%;
+    height: auto;
+  }
+
+  .banner {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 12px 14px;
+    border-radius: 10px;
+    font-size: 0.88rem;
+    line-height: 1.4;
+    margin-bottom: 16px;
+  }
+  .banner.warn { background: rgba(227, 162, 61, 0.12); color: var(--warn); }
+  .banner.danger { background: rgba(226, 87, 76, 0.12); color: var(--danger); }
+  .banner.success { background: rgba(47, 189, 121, 0.12); color: var(--success); }
+
+  label {
+    font-size: 0.78rem;
+    color: var(--ink-dim);
+    display: block;
+    margin-bottom: 6px;
+  }
+
+  .student-name {
+    font-size: 1.4rem;
+    font-weight: 700;
+    margin-bottom: 14px;
+  }
+
+  .number-field {
+    width: 100%;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 14px 16px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 1.25rem;
+    letter-spacing: 0.02em;
+    color: var(--ink);
+    margin-bottom: 6px;
+  }
+  .number-field:focus { outline: 2px solid var(--accent); border-color: transparent; }
+
+  .meta-line {
+    font-size: 0.78rem;
+    color: var(--ink-dim);
+    margin-bottom: 22px;
+  }
+
+  .btn {
+    display: block;
+    width: 100%;
+    padding: 15px;
+    border-radius: 10px;
+    border: none;
+    font-size: 0.95rem;
+    font-weight: 600;
+    cursor: pointer;
+    text-align: center;
+  }
+
+  .btn.primary { background: var(--accent); color: var(--accent-ink); margin-bottom: 10px; }
+  .btn.secondary { background: transparent; color: var(--ink); border: 1px solid var(--line); }
+
+  .spacer { flex: 1; }
+
+  .center-msg {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    gap: 14px;
+    color: var(--ink-dim);
+    padding: 0 30px;
+  }
+
+  .spinner {
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    border: 3px solid var(--line);
+    border-top-color: var(--accent);
+    animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .hidden { display: none !important; }
+
+  @media (prefers-reduced-motion: reduce) {
+    .spinner { animation: none; }
+    .shutter { transition: none; }
+  }
+</style>
+</head>
+<body>
+<div id="app">
+
+  <header>
+    <span class="wordmark">idscan</span>
+    <span class="status"><span class="dot" id="statusDot"></span><span id="statusText">starting camera…</span></span>
+  </header>
+
+  <!-- LOGIN VIEW -->
+  <div class="panel" id="loginView">
+    <div class="spacer"></div>
+    <div class="student-name" style="text-align:center; margin-bottom: 24px;">Hub login</div>
+    <label for="loginCodeField">Hub</label>
+    <select class="number-field" id="loginCodeField" style="margin-bottom: 16px;">
+      <option value="">Loading hubs…</option>
+    </select>
+    <label for="pinField">PIN</label>
+    <input class="number-field" id="pinField" inputmode="numeric" autocomplete="off" maxlength="6">
+    <div class="banner hidden" id="loginBanner"></div>
+    <div class="spacer"></div>
+    <button class="btn primary" id="loginBtn">Log in</button>
+  </div>
+
+  <!-- CAPTURE VIEW -->
+  <div id="captureView" class="hidden">
+    <div class="viewfinder">
+      <video id="video" autoplay playsinline muted></video>
+      <div class="guide">
+        <div class="corner tl"></div>
+        <div class="corner tr"></div>
+        <div class="corner bl"></div>
+        <div class="corner br"></div>
+      </div>
+      <div class="hint">Fill the frame with the ID card, then hold steady</div>
+    </div>
+    <div class="controls">
+      <button class="shutter" id="shutterBtn" aria-label="Capture photo"></button>
+    </div>
+    <a class="fallback-link" href="#" id="logoutLink">Log out</a>
+  </div>
+
+  <!-- ASSESSING / SUBMITTING VIEW -->
+  <div class="panel hidden" id="loadingView">
+    <div class="center-msg">
+      <div class="spinner"></div>
+      <div id="loadingText">Reading the card…</div>
+    </div>
+  </div>
+
+  <!-- QUALITY WARNING VIEW (client-side check failed before upload) -->
+  <div class="panel hidden" id="warnView">
+    <div class="thumb-wrap"><img id="warnThumb" alt="Captured photo"></div>
+    <div class="banner warn" id="warnBanner"></div>
+    <div class="spacer"></div>
+    <button class="btn primary" id="warnRetakeBtn">Retake photo</button>
+    <button class="btn secondary" id="warnAnywayBtn">Scan anyway</button>
+  </div>
+
+  <!-- RESULT VIEW (attendance outcome: marked / already marked / unmatched) -->
+  <div class="panel hidden" id="resultView">
+    <div class="thumb-wrap"><img id="resultThumb" alt="Captured photo"></div>
+    <div class="banner" id="resultBanner"></div>
+    <div class="student-name hidden" id="studentName"></div>
+    <div class="number-field" id="numberField"></div>
+    <div class="meta-line" id="metaLine"></div>
+    <div class="spacer"></div>
+    <button class="btn primary" id="nextBtn">Scan next student</button>
+    <button class="btn secondary" id="retakeBtn">Retake photo</button>
+  </div>
+
+  <!-- NO MATCH / CAMERA ERROR VIEW -->
+  <div class="panel hidden" id="errorView">
+    <div class="thumb-wrap hidden" id="errorThumbWrap"><img id="errorThumb" alt="Captured photo"></div>
+    <div class="banner danger" id="errorBanner"></div>
+    <div class="spacer"></div>
+    <button class="btn primary" id="errorRetakeBtn">Retake photo</button>
+  </div>
+
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  // ---- Tunable constants -------------------------------------------------
+  // These heuristics haven't been calibrated against a real dataset of
+  // student phone-photo scans yet — start here, then adjust once
+  // scans:false-warning / true-warning rates are visible in real usage.
+  const MIN_BRIGHTNESS = 55;   // 0-255 mean luma; below this, image reads as "too dark"
+  const MAX_BRIGHTNESS = 235;  // above this, likely blown-out glare
+  const MIN_SHARPNESS = 6;     // mean adjacent-pixel gradient on a downscaled sample; below this, likely blurry
+  const OUTPUT_MAX_EDGE = 1400; // cropped image is resized to at most this long edge before upload
+  const LOW_CONFIDENCE_THRESHOLD = 60; // matches the server's own advisory threshold
+
+  // ---- State / elements ---------------------------------------------------
+  const els = {
+    statusDot: document.getElementById('statusDot'),
+    statusText: document.getElementById('statusText'),
+    video: document.getElementById('video'),
+    loginView: document.getElementById('loginView'),
+    loginCodeField: document.getElementById('loginCodeField'),
+    pinField: document.getElementById('pinField'),
+    loginBanner: document.getElementById('loginBanner'),
+    loginBtn: document.getElementById('loginBtn'),
+    logoutLink: document.getElementById('logoutLink'),
+    captureView: document.getElementById('captureView'),
+    shutterBtn: document.getElementById('shutterBtn'),
+    loadingView: document.getElementById('loadingView'),
+    loadingText: document.getElementById('loadingText'),
+    warnView: document.getElementById('warnView'),
+    warnThumb: document.getElementById('warnThumb'),
+    warnBanner: document.getElementById('warnBanner'),
+    warnRetakeBtn: document.getElementById('warnRetakeBtn'),
+    warnAnywayBtn: document.getElementById('warnAnywayBtn'),
+    resultView: document.getElementById('resultView'),
+    resultThumb: document.getElementById('resultThumb'),
+    resultBanner: document.getElementById('resultBanner'),
+    studentName: document.getElementById('studentName'),
+    numberField: document.getElementById('numberField'),
+    metaLine: document.getElementById('metaLine'),
+    nextBtn: document.getElementById('nextBtn'),
+    retakeBtn: document.getElementById('retakeBtn'),
+    errorView: document.getElementById('errorView'),
+    errorThumbWrap: document.getElementById('errorThumbWrap'),
+    errorThumb: document.getElementById('errorThumb'),
+    errorBanner: document.getElementById('errorBanner'),
+    errorRetakeBtn: document.getElementById('errorRetakeBtn'),
+  };
+
+  let stream = null;
+  let pendingBlob = null; // holds the cropped photo while a quality warning is being shown
+  let authToken = localStorage.getItem('idscan_hub_token'); // persisted so a
+  // shared kiosk device doesn't need to re-login on every page reload —
+  // the server-side session still expires independently after a few
+  // hours of inactivity (see internal/hubauth.SessionDuration), so a
+  // stale stored token just gets rejected with 401 and the app falls
+  // back to the login screen at that point.
+
+  const views = [els.loginView, els.captureView, els.loadingView, els.warnView, els.resultView, els.errorView];
+  function show(view) {
+    views.forEach(v => v.classList.toggle('hidden', v !== view));
+  }
+
+  // ---- Login -----------------------------------------------------------
+
+  async function loadHubTags() {
+    try {
+      const res = await fetch('/api/auth/hub-tags');
+      const data = await res.json();
+      if (!data.ok || !data.tags || !data.tags.length) {
+        els.loginCodeField.innerHTML = '<option value="">No hubs available</option>';
+        return;
+      }
+      els.loginCodeField.innerHTML = data.tags
+        .map(t => `<option value="${t.code}">${t.code} — ${t.name}</option>`)
+        .join('');
+    } catch (err) {
+      els.loginCodeField.innerHTML = '<option value="">Could not load hub list</option>';
+    }
+  }
+
+  function showLoginView() {
+    authToken = null;
+    localStorage.removeItem('idscan_hub_token');
+    stopCamera();
+    loadHubTags();
+    show(els.loginView);
+  }
+
+  function stopCamera() {
+    if (stream) {
+      stream.getTracks().forEach(t => t.stop());
+      stream = null;
+    }
+  }
+
+  els.loginBtn.addEventListener('click', async () => {
+    const loginCode = els.loginCodeField.value.trim();
+    const pin = els.pinField.value.trim();
+    if (!loginCode || !pin) {
+      els.loginBanner.textContent = 'Enter both a login code and PIN.';
+      els.loginBanner.className = 'banner danger';
+      els.loginBanner.classList.remove('hidden');
+      return;
+    }
+
+    els.loginBtn.disabled = true;
+    els.loginBanner.classList.add('hidden');
+
+    try {
+      const res = await fetch('/api/auth/hub-login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ login_code: loginCode, pin: pin }),
+      });
+      const data = await res.json();
+
+      if (!data.ok) {
+        els.loginBanner.textContent = data.message || 'Login failed.';
+        els.loginBanner.className = 'banner danger';
+        els.loginBanner.classList.remove('hidden');
+        return;
+      }
+
+      authToken = data.token;
+      localStorage.setItem('idscan_hub_token', authToken);
+      els.pinField.value = '';
+      show(els.captureView);
+      startCamera();
+    } catch (err) {
+      els.loginBanner.textContent = 'Could not reach the server. Check your connection.';
+      els.loginBanner.className = 'banner danger';
+      els.loginBanner.classList.remove('hidden');
+    } finally {
+      els.loginBtn.disabled = false;
+    }
+  });
+
+  els.logoutLink.addEventListener('click', (e) => {
+    e.preventDefault();
+    showLoginView();
+  });
+
+  // ---- Camera setup ---------------------------------------------------
+
+  async function startCamera() {
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } },
+        audio: false,
+      });
+      els.video.srcObject = stream;
+      els.statusDot.classList.add('live');
+      els.statusText.textContent = 'live';
+    } catch (err) {
+      els.statusText.textContent = 'no camera access';
+      show(els.errorView);
+      els.errorThumbWrap.classList.add('hidden');
+      els.errorBanner.textContent =
+        'Could not access the camera (' + (err && err.message ? err.message : 'permission denied') +
+        '). Check your browser\u2019s camera permission, or use "Upload a photo instead" below.';
+      const link = document.createElement('a');
+      link.href = '/test.html';
+      link.textContent = 'Upload a photo instead';
+      link.style.color = 'inherit';
+      link.style.display = 'block';
+      link.style.marginTop = '10px';
+      els.errorBanner.after(link);
+    }
+  }
+
+  // ---- Capture: crop the video frame down to the on-screen guide rect ----
+  //
+  // The guide overlay only covers ~86% of the viewfinder width, centered,
+  // at the ID-1 card aspect ratio. Cropping the sent image to that region
+  // (rather than uploading the full frame) strips out background clutter
+  // before the image ever reaches OCR — a meaningful accuracy win for
+  // zero extra server-side work.
+  function captureCroppedFrame() {
+    const video = els.video;
+    const vw = video.videoWidth;
+    const vh = video.videoHeight;
+    const displayW = video.clientWidth;
+    const displayH = video.clientHeight;
+
+    // object-fit: cover math: the video is scaled uniformly to fully cover
+    // the display box, then centered, cropping whichever axis overflows.
+    const scale = Math.max(displayW / vw, displayH / vh);
+    const renderedW = vw * scale;
+    const renderedH = vh * scale;
+    const offsetX = (renderedW - displayW) / 2;
+    const offsetY = (renderedH - displayH) / 2;
+
+    // Guide rect in display coordinates (matches the CSS: 86% width,
+    // 1.586:1 aspect ratio, centered).
+    const guideDisplayW = displayW * 0.86;
+    const guideDisplayH = guideDisplayW / 1.586;
+    const guideDisplayX = (displayW - guideDisplayW) / 2;
+    const guideDisplayY = (displayH - guideDisplayH) / 2;
+
+    // Map into source video pixel coordinates.
+    const srcX = (guideDisplayX + offsetX) / scale;
+    const srcY = (guideDisplayY + offsetY) / scale;
+    const srcW = guideDisplayW / scale;
+    const srcH = guideDisplayH / scale;
+
+    const outW = OUTPUT_MAX_EDGE;
+    const outH = Math.round(outW / 1.586);
+
+    const canvas = document.createElement('canvas');
+    canvas.width = outW;
+    canvas.height = outH;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(video, srcX, srcY, srcW, srcH, 0, 0, outW, outH);
+
+    return canvas;
+  }
+
+  // ---- Client-side quality check ------------------------------------
+  //
+  // Cheap brightness + sharpness estimate on a small downscaled sample so
+  // this runs instantly on any phone. Not a substitute for real perspective
+  // correction / OCR confidence — just enough to catch "obviously too dark"
+  // or "obviously blurry" before spending a round trip on it.
+  function assessQuality(canvas) {
+    const sampleSize = 120;
+    const sample = document.createElement('canvas');
+    sample.width = sampleSize;
+    sample.height = Math.round(sampleSize / (canvas.width / canvas.height));
+    const sctx = sample.getContext('2d');
+    sctx.drawImage(canvas, 0, 0, sample.width, sample.height);
+
+    const { data, width, height } = sctx.getImageData(0, 0, sample.width, sample.height);
+    const gray = new Float32Array(width * height);
+    let brightnessSum = 0;
+
+    for (let i = 0, p = 0; i < data.length; i += 4, p++) {
+      const luma = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+      gray[p] = luma;
+      brightnessSum += luma;
+    }
+    const brightness = brightnessSum / gray.length;
+
+    // Sharpness proxy: mean absolute difference between horizontally
+    // adjacent pixels. Blurry images have much smaller gradients than
+    // in-focus ones, so this cheaply distinguishes the two without a full
+    // Laplacian convolution.
+    let gradSum = 0;
+    let gradCount = 0;
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width - 1; x++) {
+        const idx = y * width + x;
+        gradSum += Math.abs(gray[idx] - gray[idx + 1]);
+        gradCount++;
+      }
+    }
+    const sharpness = gradSum / gradCount;
+
+    const issues = [];
+    if (brightness < MIN_BRIGHTNESS) issues.push('too dark');
+    if (brightness > MAX_BRIGHTNESS) issues.push('too much glare');
+    if (sharpness < MIN_SHARPNESS) issues.push('blurry');
+
+    return { brightness, sharpness, ok: issues.length === 0, issues };
+  }
+
+  function canvasToJpegBlob(canvas) {
+    return new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.85));
+  }
+
+  // ---- Shutter handler --------------------------------------------------
+
+  let isProcessing = false; // guards against a fast double-tap firing two
+  // overlapping requests in the brief window before the view switches to
+  // "loading" — each request costs a full ~1s OCR pass, so a double-fire
+  // wastes real time and could log two scans for what was meant to be one.
+
+  els.shutterBtn.addEventListener('click', async () => {
+    if (isProcessing) return;
+    isProcessing = true;
+    try {
+      const canvas = captureCroppedFrame();
+      const quality = assessQuality(canvas);
+      pendingBlob = await canvasToJpegBlob(canvas);
+
+      if (!quality.ok) {
+        els.warnThumb.src = URL.createObjectURL(pendingBlob);
+        els.warnBanner.textContent =
+          'This photo looks ' + quality.issues.join(' and ') +
+          '. You can retake it, or scan it anyway if this is the best shot you can get.';
+        show(els.warnView);
+        return;
+      }
+
+      await submitScan(pendingBlob);
+    } finally {
+      isProcessing = false;
+    }
+  });
+
+  els.warnRetakeBtn.addEventListener('click', () => show(els.captureView));
+  els.warnAnywayBtn.addEventListener('click', () => {
+    if (isProcessing) return;
+    isProcessing = true;
+    submitScan(pendingBlob).finally(() => { isProcessing = false; });
+  });
+
+  // ---- Submit to /api/attendance/scan ------------------------------------
+  //
+  // Unlike the earlier OCR-only build, this endpoint commits the
+  // attendance record server-side as part of the request — there is no
+  // separate "confirm to save" step, because the whole point of a scan is
+  // to mark attendance the moment a card is read. The result screen below
+  // reports what happened (marked / already marked / unmatched), it
+  // doesn't ask the instructor to approve it first.
+
+  async function submitScan(blob) {
+    show(els.loadingView);
+    els.loadingText.textContent = 'Reading the card…';
+
+    const thumbUrl = URL.createObjectURL(blob);
+    const form = new FormData();
+    form.append('image', blob, 'capture.jpg');
+
+    let data;
+    try {
+      const res = await fetch('/api/attendance/scan', {
+        method: 'POST',
+        headers: { 'Authorization': 'Bearer ' + authToken },
+        body: form,
+      });
+      if (res.status === 401) {
+        showLoginView();
+        els.loginBanner.textContent = 'Session expired — please log in again.';
+        els.loginBanner.className = 'banner danger';
+        els.loginBanner.classList.remove('hidden');
+        return;
+      }
+      if (res.status === 503) {
+        show(els.errorView);
+        els.errorThumbWrap.classList.remove('hidden');
+        els.errorThumb.src = thumbUrl;
+        els.errorBanner.textContent = 'Attendance marking is not set up on this server yet (no database configured).';
+        return;
+      }
+      data = await res.json();
+    } catch (err) {
+      show(els.errorView);
+      els.errorThumbWrap.classList.remove('hidden');
+      els.errorThumb.src = thumbUrl;
+      els.errorBanner.textContent = 'Could not reach the server. Check your connection and try again.';
+      return;
+    }
+
+    if (!data.ok) {
+      // OCR itself failed to find a contact number at all — distinct from
+      // "found a number but it didn't match a student" (unmatched), which
+      // is rendered in the result view below, not here.
+      show(els.errorView);
+      els.errorThumbWrap.classList.remove('hidden');
+      els.errorThumb.src = thumbUrl;
+      els.errorBanner.textContent = data.message || 'Could not find a contact number on this card.';
+      return;
+    }
+
+    els.resultThumb.src = thumbUrl;
+    els.numberField.textContent = data.normalized_phone || '';
+
+    const confParts = [];
+    if (typeof data.confidence === 'number' && data.confidence >= 0) {
+      confParts.push(Math.round(data.confidence) + '% OCR confidence');
+    }
+    els.metaLine.textContent = confParts.join(' · ');
+
+    renderAttendanceOutcome(data);
+    show(els.resultView);
+  }
+
+  // ---- Render the attendance outcome -------------------------------------
+
+  function renderAttendanceOutcome(data) {
+    const status = data.attendance_status;
+    const student = data.student;
+
+    if (status === 'marked') {
+      els.studentName.textContent = student ? (student.first_name + ' ' + student.last_name) : '';
+      els.studentName.classList.remove('hidden');
+      els.resultBanner.textContent = '\u2713 Attendance marked';
+      els.resultBanner.className = 'banner success';
+
+    } else if (status === 'already_marked') {
+      els.studentName.textContent = student ? (student.first_name + ' ' + student.last_name) : '';
+      els.studentName.classList.remove('hidden');
+      const when = data.previous_marked_at ? formatTime(data.previous_marked_at) : '';
+      els.resultBanner.textContent = 'Already marked present today' + (when ? ' (at ' + when + ')' : '');
+      els.resultBanner.className = 'banner warn';
+
+    } else { // 'unmatched'
+      els.studentName.classList.add('hidden');
+      els.resultBanner.textContent =
+        data.message || 'No student found with this phone number. Check the roster, or retake the photo.';
+      els.resultBanner.className = 'banner danger';
+    }
+  }
+
+  function formatTime(isoString) {
+    try {
+      return new Date(isoString).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    } catch {
+      return '';
+    }
+  }
+
+  // ---- Result actions -----------------------------------------------
+
+  els.retakeBtn.addEventListener('click', () => show(els.captureView));
+  els.errorRetakeBtn.addEventListener('click', () => show(els.captureView));
+  els.nextBtn.addEventListener('click', () => show(els.captureView));
+
+  // ---- Init: skip login if a stored session token is already present.
+  // The token is only truly validated by the server on the next scan; if
+  // it's stale/expired, that scan will 401 and drop back to the login
+  // screen (see the 401 handling in submitScan).
+  if (authToken) {
+    show(els.captureView);
+    startCamera();
+  } else {
+    loadHubTags();
+    show(els.loginView);
+  }
+})();
+</script>
+</body>
+</html>

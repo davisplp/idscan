@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>idscan — dev test page (file upload)</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 640px; margin: 40px auto; padding: 0 16px; }
+  h1 { font-size: 1.3rem; }
+  #result { white-space: pre-wrap; background: #f4f4f4; padding: 12px; border-radius: 6px; margin-top: 16px; font-size: 0.9rem; }
+  .ok { color: #0a7d2c; font-weight: bold; }
+  .fail { color: #b3261e; font-weight: bold; }
+</style>
+</head>
+<body>
+  <h1>idscan — dev test page (file upload)</h1>
+  <p>This is a throwaway page for testing <code>/api/scan</code> directly. It is <em>not</em> the real product frontend (no login, no camera capture UI, no confirm step) — Use <a href="/">the camera capture page</a> for the real flow.</p>
+
+  <input type="file" id="fileInput" accept="image/*" capture="environment">
+  <button id="submitBtn">Scan</button>
+
+  <div id="result"></div>
+
+  <script>
+    document.getElementById('submitBtn').addEventListener('click', async () => {
+      const input = document.getElementById('fileInput');
+      const resultEl = document.getElementById('result');
+      if (!input.files.length) {
+        resultEl.textContent = 'Choose an image first.';
+        return;
+      }
+      resultEl.textContent = 'Scanning...';
+
+      const form = new FormData();
+      form.append('image', input.files[0]);
+
+      try {
+        const res = await fetch('/api/scan', { method: 'POST', body: form });
+        const data = await res.json();
+        resultEl.innerHTML =
+          (data.ok ? '<span class="ok">MATCH FOUND</span>\n' : '<span class="fail">NO MATCH</span>\n') +
+          JSON.stringify(data, null, 2);
+      } catch (err) {
+        resultEl.textContent = 'Request failed: ' + err;
+      }
+    });
+  </script>
+</body>
+</html>
