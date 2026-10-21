@@ -12,9 +12,11 @@ implemented and tested end-to-end against a real Postgres database — see
 - `internal/extract` — label-anchored "Contact No." extraction + Kenyan
   E.164 normalization.
 - `internal/pipeline` — the shared decode → preprocess → OCR → extract
-  sequence, used by both `/api/scan` and `/api/attendance/scan`.
+  sequence, used by both `/api/scan` and `/api/hubs/{hubId}/attendance/scan`.
 
-**Attendance marking** (`/api/attendance/scan` — requires `DATABASE_URL`):
+**Attendance marking** (`/api/hubs/{hubId}/attendance/scan` — requires
+`DATABASE_URL`, `KEYCLOAK_ISSUER_URL` and an HMS login; see
+"Authentication" below):
 - `internal/match` — finds a student by phone number against the existing
   `students` table, tolerating mixed formatting already in the roster
   (`+254...`, `0740...`, with/without spaces) by comparing the last 9
@@ -30,11 +32,9 @@ implemented and tested end-to-end against a real Postgres database — see
   phone lookups stay fast as the roster grows, instead of a sequential
   scan per request.
 
-**Frontend** (`web/index.html`):
-- Live camera viewfinder with a card-shaped alignment guide, crop-to-guide
-  before upload, client-side blur/brightness check, and a confirm/edit
-  screen showing the photo next to the extracted number.
-- `web/test.html` — plain file-upload dev fallback (no camera needed).
+**Frontend**: scanning happens in hms-frontend (the hub Attendance page's
+"Scan Student Card" dialog), behind the HMS login. This repo only serves
+`web/test.html`, a plain file-upload page for testing `/api/scan`.
 
 Unit tests: `internal/extract/extract_test.go` covers extraction and
 normalization, including both real card layouts from the sample PDF and a
@@ -56,12 +56,12 @@ a real phone-camera photo of Yomlat Gatluak Geng's card (see conversation):
 
 ## Requirements
 
-- Go 1.21+
+- Go 1.24+
 - Tesseract OCR + dev headers:
   ```
   apt-get install -y tesseract-ocr libtesseract-dev libleptonica-dev pkg-config build-essential
   ```
-- Postgres (only needed for `/api/attendance/scan`; `/api/scan` works without it)
+- Postgres and the HMS Keycloak realm (only needed for attendance scanning; `/api/scan` works without them)
 - `CGO_ENABLED=1` (gosseract's cgo bindings)
 
 ## Build & run
@@ -82,26 +82,30 @@ CGO_ENABLED=1 go build -o idscan-server ./cmd/server
 psql "$DATABASE_URL" -f migrations/0001_attendance.sql
 psql "$DATABASE_URL" -f migrations/0002_phone_lookup_index.sql  # optional but recommended
 
-DATABASE_URL="postgres://user:pass@host:5432/dbname?sslmode=disable" ./idscan-server
+DATABASE_URL="postgres://user:pass@host:5432/dbname?sslmode=disable" \
+KEYCLOAK_ISSUER_URL="https://<keycloak-host>/realms/hms" \
+  ./idscan-server
 ```
 
 The server logs which mode it's in on startup:
 ```
-database connected — /api/attendance/scan enabled
+database connected, Keycloak issuer https://<keycloak-host>/realms/hms — /api/hubs/{hubId}/attendance/scan enabled
 ```
 or
 ```
-DATABASE_URL not set — /api/attendance/scan disabled, /api/scan still works
+DATABASE_URL not set — attendance marking disabled, /api/scan still works
 ```
 
 ## API
 
 **`POST /api/scan`** — OCR only, no database. Same as before.
 
-**`POST /api/attendance/scan`** — OCR + match + mark attendance:
+**`POST /api/hubs/{hubId}/attendance/scan`** — OCR + match + mark
+attendance, as a logged-in HMS user (see "Authentication" below):
 
 ```bash
-curl -X POST -F "image=@card.jpg" http://localhost:8080/api/attendance/scan
+curl -X POST -H "Authorization: Bearer $KEYCLOAK_ACCESS_TOKEN" \
+  -F "image=@card.jpg" http://localhost:8080/api/hubs/$HUB_ID/attendance/scan
 ```
 
 ```json
@@ -166,7 +170,7 @@ tests (which exercise line-separated input).
 
 ## Matching: card number first, phone as fallback
 
-`/api/attendance/scan` extracts **both** the card's own identifier
+`/api/hubs/{hubId}/attendance/scan` extracts **both** the card's own identifier
 ("Card No." / "Identification No.") and the phone number from every scan,
 and matches in this order:
 
@@ -194,73 +198,47 @@ via `card_number`, the second correctly fell back to `phone` and still
 identified the same student — see conversation history for the exact
 `scans` table output proving both paths land distinctly.
 
-## Hub authentication (hub_tags — supersedes the earlier hubs-based design)
+## Authentication (HMS Keycloak login)
 
-`/api/attendance/scan` requires a valid session, obtained by logging in
-against **`hub_tags`** — a small, clean, authoritative table of ~35
-scan-session identities (`AIY`, `ASA`, `YOM`, ...) seeded directly from a
-reference list, **not** derived from the existing `hubs` table.
+Scanning uses the same login as the rest of HMS: there is no separate
+idscan login. hms-frontend forwards the logged-in user's Keycloak access
+token, and the hub they're scanning for is part of the URL:
 
-**Why a separate table, not `hubs.login_code`** (added in migration
-0005, now superseded): the card-number prefix codes were shown, via two
-independent investigations, to map to *multiple* different `hubs.id`
-values in production — e.g. `EWI` spans 5 distinct rows, `GKP` spans 10.
-That's a data-quality problem in the existing `hubs` table, not something
-this project should silently paper over by guessing which row is "the
-real one" per code. `hub_tags` sidesteps it entirely: a fresh table with
-its own UUIDs, with no dependency on `hubs`'s data quality at all.
-
-**Cross-hub scanning is expected, not a bug.** A logged-in tag can scan a
-student belonging to any other tag — e.g. `AIY` scanning a `YOM`-coded
-student's card — and this is exactly the point of keeping
-`scanning_hub_tag_id` (who's scanning) independent of the matched
-student's own `hub_id` (where they're enrolled). Verified end to end: an
-`AIY` session scanning a `YOM` student correctly marks attendance under
-the student's own hub while recording `AIY` as the scanning tag.
-
-**Endpoints:**
-- `GET /api/auth/hub-tags` — public, read-only list of `{code, name}` for
-  the frontend's login dropdown. No secrets in the response.
-- `POST /api/auth/hub-login` — `{login_code, pin}` → session token. Same
-  PIN + lockout mechanics as before (see below).
-
-**Setting a tag's PIN** (no admin UI yet):
-```sql
--- Generate a hash via internal/hubauth.HashPIN("1234"), then:
-UPDATE hub_tags SET pin_hash = '$2a$...' WHERE code = 'AIY';
+```bash
+curl -X POST \
+  -H "Authorization: Bearer $KEYCLOAK_ACCESS_TOKEN" \
+  -F "image=@card.jpg" \
+  http://localhost:8080/api/hubs/$HUB_ID/attendance/scan
 ```
-A tag with no `pin_hash` set cannot log in — set one before a hub is
-expected to start scanning.
 
-**What's unused/deprecated now**: `hubs.login_code`, `hubs.pin_hash`,
-`hub_sessions`, and `scans.scanning_hub_id` /
-`attendance_records.scanning_hub_id` (from migrations 0005-0006) are left
-in place but no longer written to — not dropped, to avoid a destructive
-migration on columns that may already have data. `scanning_hub_tag_id`
-(migration 0007) is what the application actually uses going forward.
+`internal/kcauth` verifies the token against `KEYCLOAK_ISSUER_URL` (the
+same realm hms-backend uses, e.g. `https://<host>/realms/hms`) and then
+applies hms-backend's own hub-access rule, reading the shared `users` and
+`user_hubs` tables:
 
-**Design choices carried over from the original design, unchanged:**
+- `super-admin`, `admin` and `super-instructor` may scan for any hub.
+- Everyone else needs an active `users` row assigned to that hub in
+  `user_hubs` — the same check as hms-backend's `RequireHubAccess`.
 
- **A short PIN's real defense is lockout, not the hash algorithm.** A
-  4-6 digit PIN has only 10,000-1,000,000 possible values — bcrypt alone
-  doesn't meaningfully protect that if unlimited guesses are allowed. What
-  actually stops brute-forcing is `hubs.failed_login_attempts` /
-  `locked_until`: 5 wrong attempts locks the hub out for 15 minutes.
-  Verified end to end: a 6th consecutive wrong attempt is rejected with a
-  lockout message, and the database shows the correct `locked_until`
-  timestamp.
-- **Sliding session expiration**, not a fixed timeout from login. Each
-  authenticated request extends the session by another
-  `hubauth.SessionDuration` (4 hours) — a hub actively scanning stays
-  logged in indefinitely through the day; one left idle expires a few
-  hours after its last use, matching how a shared device actually gets
-  used.
-- **The frontend persists the token in `localStorage`**, appropriate for
-  a shared kiosk device that shouldn't need re-login on every page reload.
-  A stale/expired token is only actually caught server-side on the next
-  scan attempt (which 401s and drops back to the login screen) — this is
-  intentional simplicity, not a security gap, since the server is the
-  actual source of truth on session validity either way.
+Responses: 401 for a missing, invalid or expired token; 403 for a valid
+token with no HMS group (`no HMS access`) or no access to the hub (`not
+authorized for this hub`).
+
+**Scan attribution.** The hub in the URL is the scanning hub. It's stored
+in `scanning_hub_id` (migration 0006). `scanning_hub_tag_id` is still
+filled in, from the `hub_tags` row mapped to that hub (`hub_tags.hub_id`,
+migration 0008), so the reports' "Scanned By" code and Visiting badge
+keep working. It's NULL for a hub with no tag mapped.
+
+**Cross-hub scanning is expected, not a bug.** A user assigned to one hub
+can scan a student enrolled at another: attendance is marked under the
+student's own `hub_id`, and the scanning hub is recorded separately.
+
+**Removed:** the PIN login (`/api/auth/hub-tags`, `/api/auth/hub-login`,
+`internal/hubauth`) and the kiosk page that used it (`web/index.html`).
+The `hub_tags` PIN/lockout columns, `hub_tag_sessions`, and the older
+`hubs.login_code` / `hubs.pin_hash` / `hub_sessions` are left in place but
+no longer used — not dropped, to avoid a destructive migration.
 
 ## Design decisions worth knowing about
 

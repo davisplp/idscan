@@ -10,7 +10,7 @@ import (
 	"idscan/internal/pipeline"
 )
 
-// AttendanceResponse is the JSON shape returned by POST /api/attendance/scan.
+// AttendanceResponse is the JSON shape returned by POST /api/hubs/{hubId}/attendance/scan.
 type AttendanceResponse struct {
 	// OK is true if OCR found at least one usable identifier (a phone
 	// number, a card number, or both) — not specifically a phone number.
@@ -40,7 +40,7 @@ type StudentDTO struct {
 	LastName  string `json:"last_name"`
 }
 
-// NewAttendanceScanHandler builds the /api/attendance/scan handler. It
+// NewAttendanceScanHandler builds the /api/hubs/{hubId}/attendance/scan handler. It
 // takes the database handle as a constructor argument (rather than a
 // package-level global) so main.go controls its lifecycle and the handler
 // stays easy to test with a fake/mock DB later.

@@ -1,7 +1,8 @@
 // Package pipeline runs the shared upload -> preprocess -> OCR -> extract
 // sequence used by every scanning endpoint. It exists so /api/scan and
-// /api/attendance/scan don't duplicate this logic — attendance marking is
-// "the scan pipeline, plus a database match", not a different pipeline.
+// /api/hubs/{hubId}/attendance/scan don't duplicate this logic —
+// attendance marking is "the scan pipeline, plus a database match", not a
+// different pipeline.
 package pipeline
 
 import (

@@ -21,10 +21,7 @@ func SetReportsAPIKey(key string) { reportsAPIKey = key }
 // RequireServiceKey protects the reporting endpoints. This is
 // service-to-service auth (the hms-frontend Next.js server calling this
 // API from its own backend, never from a browser) — deliberately
-// separate from hubauth's PIN-based sessions, which authenticate a
-// physical scanning device, not a reporting consumer. Mixing the two
-// would be confusing and wrong: a hub's scanning PIN should not also be
-// able to read every hub's attendance data.
+// separate from the per-user Keycloak auth on scanning (internal/kcauth).
 func RequireServiceKey(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		provided := r.Header.Get("X-API-Key")

@@ -5,21 +5,24 @@
 // testing the scan pipeline in isolation. It is intentionally left
 // unauthenticated: it performs no database writes and identifies no one.
 //
-// /api/attendance/scan additionally matches the extracted identifiers
-// against the students table and marks attendance, so it requires
-// DATABASE_URL to be set, AND requires a valid hub login session
-// (POST /api/auth/hub-login first) — see internal/hubauth.
+// /api/hubs/{hubId}/attendance/scan additionally matches the extracted
+// identifiers against the students table and marks attendance for that
+// hub. It requires DATABASE_URL and KEYCLOAK_ISSUER_URL, and an HMS
+// Keycloak access token for a user allowed to act on the hub — see
+// internal/kcauth.
 //
 // See README.md for the full roadmap.
 package main
 
 import (
+	"context"
 	"log"
 	"net/http"
 	"os"
 
 	"idscan/internal/api"
 	"idscan/internal/db"
+	"idscan/internal/kcauth"
 )
 
 func main() {
@@ -39,10 +42,17 @@ func main() {
 		}
 		defer conn.Close()
 
-		mux.HandleFunc("/api/auth/hub-tags", api.NewHubTagsHandler(conn))
-		mux.HandleFunc("/api/auth/hub-login", api.NewHubLoginHandler(conn))
-		mux.HandleFunc("/api/attendance/scan", api.RequireHubSession(conn, api.NewAttendanceScanHandler(conn)))
-		log.Printf("database connected — /api/auth/hub-tags, /api/auth/hub-login and /api/attendance/scan enabled")
+		if issuer := os.Getenv("KEYCLOAK_ISSUER_URL"); issuer != "" {
+			verifier, err := kcauth.NewVerifier(context.Background(), issuer)
+			if err != nil {
+				log.Fatalf("failed to set up Keycloak token verification: %v", err)
+			}
+			mux.HandleFunc("POST /api/hubs/{hubId}/attendance/scan",
+				api.RequireHubUser(verifier, conn, api.NewAttendanceScanHandler(conn)))
+			log.Printf("database connected, Keycloak issuer %s — /api/hubs/{hubId}/attendance/scan enabled", issuer)
+		} else {
+			log.Printf("KEYCLOAK_ISSUER_URL not set — attendance scanning disabled")
+		}
 
 		if reportsKey := os.Getenv("REPORTS_API_KEY"); reportsKey != "" {
 			api.SetReportsAPIKey(reportsKey)
@@ -62,14 +72,12 @@ func main() {
 		unavailable := func(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "not configured (DATABASE_URL is not set)", http.StatusServiceUnavailable)
 		}
-		mux.HandleFunc("/api/auth/hub-tags", unavailable)
-		mux.HandleFunc("/api/auth/hub-login", unavailable)
-		mux.HandleFunc("/api/attendance/scan", unavailable)
-		log.Printf("DATABASE_URL not set — hub login and attendance marking disabled, /api/scan still works")
+		mux.HandleFunc("POST /api/hubs/{hubId}/attendance/scan", unavailable)
+		log.Printf("DATABASE_URL not set — attendance marking disabled, /api/scan still works")
 	}
 
-	// Serves the camera-capture frontend at "/" (web/index.html) and the
-	// plain file-upload dev fallback at "/test.html".
+	// Serves the plain file-upload OCR test page at "/test.html". Attendance
+	// scanning itself happens in hms-frontend, behind the HMS login.
 	mux.Handle("/", http.FileServer(http.Dir("./web")))
 
 	addr := ":" + port

@@ -61,10 +61,12 @@ type ScanInput struct {
 	NormalizedPhone string // "" if not found
 	RawCardNumber   string // "" if not found
 	Confidence      float64
-	// ScanningHubID is the hub whose LOGIN SESSION performed this scan —
-	// set by the authenticated hub session (see internal/hubauth), NOT
-	// derived from the matched student. Empty if scanning is unauthenticated
-	// (e.g. running without hub auth configured).
+	// ScanningHubID is the hub (a hubs.id) the scan was performed for —
+	// the hub the logged-in HMS user chose and is authorized for (see
+	// internal/kcauth), NOT derived from the matched student. Stored as
+	// scanning_hub_id; scanning_hub_tag_id is filled from the hub_tags row
+	// mapped to this hub (migration 0008), so existing reports keep
+	// showing which hub's device scanned. Empty when unauthenticated.
 	ScanningHubID string
 }
 
@@ -136,8 +138,8 @@ func RecordScan(ctx context.Context, dbConn *sql.DB, in ScanInput) (Result, erro
 	var scanID string
 	insertErr := db.Retry(func() error {
 		return dbConn.QueryRowContext(ctx, `
-			INSERT INTO public.scans (raw_ocr_text, raw_match, normalized_phone, card_number, matched_via, confidence, matched_student_id, scanning_hub_tag_id)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+			INSERT INTO public.scans (raw_ocr_text, raw_match, normalized_phone, card_number, matched_via, confidence, matched_student_id, scanning_hub_id, scanning_hub_tag_id)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8::uuid, `+hubTagFor("$8")+`)
 			RETURNING id`,
 			in.RawOCRText, in.RawPhoneMatch, in.NormalizedPhone, rawCardNumber,
 			nullIfEmpty(string(matchedVia)), in.Confidence, matchedStudentID, nullIfEmpty(in.ScanningHubID),
@@ -164,6 +166,14 @@ func RecordScan(ctx context.Context, dbConn *sql.DB, in ScanInput) (Result, erro
 	}
 	result.MatchedVia = matchedVia
 	return result, nil
+}
+
+// hubTagFor is a subquery resolving the scanning hub (bound at param) to
+// its tag, picking the same row reports.GetStats shows as the hub's "home
+// device" so a hub's own scans are never flagged as visiting. NULL when no
+// tag is mapped to the hub.
+func hubTagFor(param string) string {
+	return `(SELECT id FROM public.hub_tags WHERE hub_id = ` + param + `::uuid ORDER BY code LIMIT 1)`
 }
 
 func nullIfEmpty(s string) sql.NullString {
@@ -194,8 +204,8 @@ func markAttendance(ctx context.Context, dbConn *sql.DB, student match.Student, 
 	// a dropped connection.
 	err := db.Retry(func() error {
 		return dbConn.QueryRowContext(ctx, `
-			INSERT INTO public.attendance_records (student_id, hub_id, session_date, scan_id, scanning_hub_tag_id)
-			VALUES ($1, $2, $3, $4, $5)
+			INSERT INTO public.attendance_records (student_id, hub_id, session_date, scan_id, scanning_hub_id, scanning_hub_tag_id)
+			VALUES ($1, $2, $3, $4, $5::uuid, `+hubTagFor("$5")+`)
 			ON CONFLICT (student_id, session_date) DO NOTHING
 			RETURNING id, scanned_at`,
 			student.ID, student.HubID, sessionDate, scanID, nullIfEmpty(scanningHubID),
