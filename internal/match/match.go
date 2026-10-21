@@ -93,12 +93,20 @@ func ByPhone(ctx context.Context, dbConn *sql.DB, normalizedPhone string) (Stude
 }
 
 // ByCardNumber finds a student by their printed card_number, matched
-// case-insensitively and exactly (unlike phone matching, a card number
-// needs no format normalization — it's printed and stored the same way).
-// This is preferred over phone matching when available: it's guaranteed
-// unique per card (once the students_card_number_uidx constraint is in
-// place) and isn't subject to the formatting inconsistencies phone
-// numbers accumulate in a hand-maintained roster.
+// case-insensitively. This is preferred over phone matching when
+// available: it's guaranteed unique per card (once the
+// students_card_number_uidx constraint is in place) and isn't subject to
+// the formatting inconsistencies phone numbers accumulate in a
+// hand-maintained roster.
+//
+// Both sides are compared by cardKey, which tolerates the OCR errors seen
+// in production — Tesseract read "PLP-26-YOM-001-S9Z" as
+// "PLP-26-YOM-0OOI-S9Z" — without general fuzzy matching: real card
+// numbers in the roster are as close as two edits apart, so "allow one
+// edit" could match a neighbour's card. cardKey only removes ambiguity
+// that can't distinguish two real cards (checked collision-free against
+// the roster when added), and the LIMIT 2 check below still refuses to
+// guess if a collision ever appears.
 func ByCardNumber(ctx context.Context, dbConn *sql.DB, cardNumber string) (Student, error) {
 	if cardNumber == "" {
 		return Student{}, fmt.Errorf("match: empty card number")
@@ -107,7 +115,7 @@ func ByCardNumber(ctx context.Context, dbConn *sql.DB, cardNumber string) (Stude
 	const query = `
 		SELECT id, hub_id, first_name, last_name
 		FROM public.students
-		WHERE upper(card_number) = upper($1)
+		WHERE ` + cardKey("card_number") + ` = ` + cardKey("$1") + `
 		  AND deleted_at IS NULL
 		LIMIT 2`
 
@@ -144,6 +152,17 @@ func ByCardNumber(ctx context.Context, dbConn *sql.DB, cardNumber string) (Stude
 			"match: ambiguous — %d students share card number %q; needs manual resolution",
 			len(students), cardNumber)
 	}
+}
+
+// cardKey is the SQL expression card numbers are compared by: uppercased,
+// OCR look-alikes folded (O -> 0, I and L -> 1, applied to the whole code
+// so letters like "YOM" fold the same on both sides), and leading zeros
+// dropped from each dash-separated segment, so an extra or missing pad
+// zero in the sequence number still matches ("0OOI" -> "0001" -> "1",
+// same as "001"). Every segment must otherwise match exactly, including
+// the trailing check code.
+func cardKey(expr string) string {
+	return `regexp_replace(translate(upper(` + expr + `), 'OIL', '011'), '(^|-)0+([0-9])', '\1\2', 'g')`
 }
 
 func last9Digits(normalizedPhone string) (string, error) {
