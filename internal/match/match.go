@@ -112,7 +112,7 @@ func ByCardNumber(ctx context.Context, dbConn *sql.DB, cardNumber string) (Stude
 		return Student{}, fmt.Errorf("match: empty card number")
 	}
 
-	const query = `
+	query := `
 		SELECT id, hub_id, first_name, last_name
 		FROM public.students
 		WHERE ` + cardKey("card_number") + ` = ` + cardKey("$1") + `
